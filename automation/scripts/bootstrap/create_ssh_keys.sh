@@ -91,6 +91,17 @@ generate_key() {
     local private_key="${PRIVATE_KEY_DIR}/${key_name}"
     local public_key_repo="${PUBLIC_KEY_DIR}/${key_name}.pub"
 
+        # La clave del auditor pertenece al profesor y no se debe regenerar.
+    if [[ "$key_name" == "vcorp_auditor" ]]; then
+        if [[ ! -f "$public_key_repo" ]]; then
+            log_err "Falta la clave pública oficial del auditor: $public_key_repo"
+            return 1
+        fi
+
+        log_info "Se conserva la clave pública oficial del auditor."
+        return 0
+    fi
+
     if [[ -f "${private_key}" || -f "${private_key}.pub" ]]; then
         if [[ "${FORCE}" != "true" ]]; then
             log_warn "La clau '${key_name}' ja existeix. S'omet (usa -f per regenerar)."

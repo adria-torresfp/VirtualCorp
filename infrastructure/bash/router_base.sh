@@ -345,7 +345,8 @@ create_router_vm() {
     log_info "Configurant NAT temporal per SSH: localhost:$ssh_port → RouterOS:22"
 
     "$VBOXMANAGE_BIN" modifyvm "$name" \
-        --natpf1 "ssh,tcp,127.0.0.1,${ssh_port},,22" || return 1
+    --natnet1 "10.0.3.0/24" \
+    --natpf1 "ssh,tcp,127.0.0.1,${ssh_port},,22" || return 1
 }
 
 
@@ -478,6 +479,8 @@ attach_router_disk() {
 bootstrap_routeros() {
     local name="$1"
     local ssh_port="$2"
+    local auditor_bootstrap_password
+    auditor_bootstrap_password="$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')" || return 1
 
     log_info "Arrencant '$name' per fer el bootstrap"
 
@@ -543,6 +546,36 @@ EOF
 
     if [[ $? -ne 0 ]]; then
         log_err "No s'ha pogut instal·lar la clau SSH."
+        return 1
+    fi
+
+    # -----------------------------------------------------
+    # Instalar clave pública del profesor/auditor
+    # -----------------------------------------------------
+
+    log_info "Injectant clau SSH de l'auditor"
+
+    scp \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -P "$ssh_port" \
+        "$AUDIT_PUB_KEY_FILE" \
+        admin@127.0.0.1:auditor.pub \
+        || return 1
+
+    ssh \
+        -o StrictHostKeyChecking=no \
+        -o UserKnownHostsFile=/dev/null \
+        -p "$ssh_port" \
+        admin@127.0.0.1 <<EOF
+
+/user add name=auditor group=full password="$auditor_bootstrap_password" comment="Professor/auditoria" disabled=no
+/user ssh-keys import user=auditor public-key-file=auditor.pub
+
+EOF
+
+    if [[ $? -ne 0 ]]; then
+        log_err "No s'ha pogut instal·lar la clau SSH de l'auditor."
         return 1
     fi
 
@@ -614,9 +647,14 @@ EOF
 
     done
 
-    if [[ "$nat" == true ]]; then
+            if [[ "$nat" == true ]]; then
         cat >> "$rsc_file" <<EOF
+/ip dhcp-client set [find interface=ether1] add-default-route=yes use-peer-dns=yes disabled=no
 /ip firewall nat add chain=srcnat out-interface=ether1 action=masquerade
+EOF
+    else
+        cat >> "$rsc_file" <<EOF
+/ip dhcp-client set [find interface=ether1] add-default-route=no use-peer-dns=yes disabled=no
 EOF
     fi
 
@@ -697,31 +735,14 @@ apply_router_config() {
 configure_final_network() {
     local name="$1"
     local nat="$2"
-    local intnets_name="$3"
 
-    local -n ref_intnets="$intnets_name"
-
-    # Si es demana conservar NAT, no fem res.
     if [[ "$nat" == true ]]; then
-        log_info "NIC1 es manté en mode NAT"
-        return 0
+        log_info "NIC1 de '$name' se mantiene en NAT para Internet y SSH"
+    else
+        log_info "NIC1 de '$name' se mantiene en NAT para el acceso SSH"
     fi
 
-    # NIC1 serà la primera xarxa interna especificada.
-    local initial_intnet="${ref_intnets[0]}"
-
-    if [[ -z "$initial_intnet" ]]; then
-        log_warn "No s'ha especificat xarxa per a NIC1."
-        return 0
-    fi
-
-    log_info "NIC1 → xarxa interna definitiva '$initial_intnet'"
-
-    "$VBOXMANAGE_BIN" modifyvm "$name" \
-        --nic1 intnet \
-        --intnet1 "$initial_intnet" \
-        --cableconnected1 on \
-        || return 1
+    return 0
 }
 
 
